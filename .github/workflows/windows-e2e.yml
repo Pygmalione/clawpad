@@ -1,0 +1,185 @@
+name: Windows E2E
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:  # Manual trigger for testing
+
+permissions:
+  contents: read
+
+jobs:
+  windows-e2e:
+    name: Windows E2E Tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build ClawPad
+        run: pnpm build
+
+      - name: Install OpenClaw globally
+        run: npm install -g openclaw
+
+      - name: Verify OpenClaw installed
+        run: openclaw --version
+
+      - name: Create OpenClaw config directory
+        run: |
+          $configDir = "$env:APPDATA\OpenClaw"
+          New-Item -ItemType Directory -Force -Path $configDir
+          echo "Created config dir: $configDir"
+        shell: pwsh
+
+      - name: Create minimal OpenClaw config
+        run: |
+          $configPath = "$env:APPDATA\OpenClaw\openclaw.json"
+          $config = @{
+            gateway = @{
+              port = 18789
+              bind = "127.0.0.1"
+              auth = @{
+                token = "test-token-for-ci"
+              }
+            }
+            agents = @{
+              defaults = @{
+                workspace = "$env:USERPROFILE\.openclaw\workspace"
+              }
+            }
+          } | ConvertTo-Json -Depth 10
+          Set-Content -Path $configPath -Value $config
+          echo "Config written to: $configPath"
+          Get-Content $configPath
+        shell: pwsh
+
+      - name: Create pages directory
+        run: |
+          $pagesDir = "$env:USERPROFILE\.openclaw\workspace\pages"
+          New-Item -ItemType Directory -Force -Path $pagesDir
+          # Create a test page
+          $testPage = @"
+          ---
+          title: Test Page
+          created: 2026-01-01T00:00:00Z
+          modified: 2026-01-01T00:00:00Z
+          ---
+          # Test Page
+          This is a test page for Windows E2E testing.
+          "@
+          Set-Content -Path "$pagesDir\test-page.md" -Value $testPage
+          echo "Created test page at: $pagesDir\test-page.md"
+        shell: pwsh
+
+      - name: Run Windows-specific unit tests
+        run: pnpm test:unit
+        env:
+          CLAWPAD_PAGES_DIR: ${{ runner.temp }}\clawpad-test-pages
+
+      - name: Run path normalization tests
+        run: node scripts/test-windows-paths.js
+        shell: cmd
+
+      - name: Start ClawPad server (background)
+        run: |
+          Start-Process -FilePath "node" -ArgumentList "bin/clawpad.js", "--no-open", "-p", "3333" -NoNewWindow -PassThru
+          Start-Sleep -Seconds 5
+        shell: pwsh
+
+      - name: Test ClawPad API endpoints
+        run: |
+          # Test version endpoint
+          $version = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/version" -Method Get
+          echo "Version: $($version.version)"
+          
+          # Test spaces endpoint
+          $spaces = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/files/spaces" -Method Get
+          echo "Spaces count: $($spaces.Count)"
+          
+          # Test gateway detection
+          $gateway = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/gateway/detect" -Method Get
+          echo "Gateway URL: $($gateway.url)"
+          echo "Gateway source: $($gateway.source)"
+          
+          # Test search endpoint
+          $search = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/search?q=test&mode=basic" -Method Get
+          echo "Search results: $($search.results.Count)"
+          echo "Search mode: $($search.mode)"
+          
+          # Test recent pages
+          $recent = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/files/recent?limit=5" -Method Get
+          echo "Recent pages: $($recent.Count)"
+          
+          # Verify paths use forward slashes
+          foreach ($page in $recent) {
+            if ($page.path -match '\\') {
+              throw "Path contains backslash: $($page.path)"
+            }
+            echo "Page path OK: $($page.path)"
+          }
+        shell: pwsh
+
+      - name: Test file operations with Windows paths
+        run: |
+          # Create a page via API
+          $body = @{
+            content = "# Created via API`n`nThis page was created on Windows."
+            meta = @{
+              title = "API Created Page"
+            }
+          } | ConvertTo-Json
+          
+          $created = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/files/pages/test-space/api-created.md" -Method Put -Body $body -ContentType "application/json"
+          echo "Created page: $($created.meta.path)"
+          
+          # Verify path format
+          if ($created.meta.path -match '\\') {
+            throw "Created page path contains backslash: $($created.meta.path)"
+          }
+          
+          # Read it back
+          $page = Invoke-RestMethod -Uri "http://127.0.0.1:3333/api/files/pages/test-space/api-created.md" -Method Get
+          echo "Read back title: $($page.meta.title)"
+          echo "Read back path: $($page.meta.path)"
+        shell: pwsh
+
+  windows-build:
+    name: Windows Build
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Type check
+        run: pnpm tsc --noEmit
