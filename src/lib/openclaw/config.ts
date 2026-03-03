@@ -30,6 +30,19 @@ function resolveUserPath(input: string): string {
   return path.resolve(trimmed);
 }
 
+/**
+ * Safe check if a path exists, handling Windows permission errors
+ * on junction points like "Application Data".
+ */
+function safeExistsSync(filePath: string): boolean {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    // EPERM on Windows junction points, or other access errors
+    return false;
+  }
+}
+
 export function resolveOpenClawStateDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.OPENCLAW_STATE_DIR || env.CLAWDBOT_STATE_DIR;
   if (override && override.trim()) {
@@ -38,7 +51,7 @@ export function resolveOpenClawStateDir(env: NodeJS.ProcessEnv = process.env): s
 
   if (process.platform === "win32") {
     const windowsCandidate = buildWindowsStateDirCandidates(env).find((candidate) =>
-      fs.existsSync(candidate),
+      safeExistsSync(candidate),
     );
     if (windowsCandidate) {
       return windowsCandidate;
@@ -62,7 +75,7 @@ export function findOpenClawConfigPath(
   const explicit = env.OPENCLAW_CONFIG_PATH || env.CLAWDBOT_CONFIG_PATH;
   if (explicit && explicit.trim()) {
     const resolved = resolveUserPath(explicit);
-    return fs.existsSync(resolved) ? resolved : null;
+    return safeExistsSync(resolved) ? resolved : null;
   }
 
   const stateDir = resolveOpenClawStateDir(env);
@@ -78,7 +91,7 @@ export function findOpenClawConfigPath(
   ];
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
+    if (safeExistsSync(candidate)) {
       return candidate;
     }
   }
