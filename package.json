@@ -38,6 +38,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
+    "postinstall": "node bin/postinstall-repair.js",
     "lint": "eslint",
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "test:unit": "tsx --test --test-concurrency=1 tests/unit/**/*.test.ts",

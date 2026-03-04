@@ -34,11 +34,21 @@ const CURRENT_VERSION = (() => {
     return "0.0.0";
   }
 })();
+const CURRENT_LAUNCHER_REALPATH = (() => {
+  try {
+    if (!process.argv[1]) return null;
+    return fs.realpathSync(process.argv[1]);
+  } catch {
+    return null;
+  }
+})();
 
 // ─── Arg Parsing ─────────────────────────────────────────
 const args = process.argv.slice(2);
 
 async function bootstrap() {
+  maybeHandoffToNewerInstall(args);
+
   // Handle Cloud Share Command
   if (args[0] === "share") {
     await startShare(args.slice(1));
@@ -171,6 +181,121 @@ function compareSemver(a, b) {
     return parsedA.patch > parsedB.patch ? 1 : -1;
   }
   return 0;
+}
+
+function parseCliPaths(output) {
+  return String(output || "")
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function collectCandidateClawpadExecutables() {
+  const candidates = [];
+  if (process.platform === "win32") {
+    const result = runBinary("where", ["clawpad"]);
+    if (result.ok) {
+      candidates.push(...parseCliPaths(result.stdout));
+    }
+  } else {
+    const result = runBinary("which", ["-a", "clawpad"]);
+    if (result.ok) {
+      candidates.push(...parseCliPaths(result.stdout));
+    }
+  }
+
+  // Include common global install locations in case shell lookup misses one.
+  candidates.push(
+    path.join(os.homedir(), ".local", "bin", "clawpad"),
+    "/opt/homebrew/bin/clawpad",
+    "/usr/local/bin/clawpad",
+  );
+
+  const dedup = new Set();
+  const existing = [];
+  for (const candidate of candidates) {
+    const resolved = String(candidate || "").trim();
+    if (!resolved || dedup.has(resolved)) continue;
+    dedup.add(resolved);
+    try {
+      fs.accessSync(resolved, fs.constants.X_OK);
+      existing.push(resolved);
+    } catch {
+      // ignore
+    }
+  }
+  return existing;
+}
+
+function resolveClawpadPackageInfo(executablePath) {
+  let launcherRealpath;
+  try {
+    launcherRealpath = fs.realpathSync(executablePath);
+  } catch {
+    return null;
+  }
+
+  let dir = path.dirname(launcherRealpath);
+  for (let i = 0; i < 8; i += 1) {
+    const pkgPath = path.join(dir, "package.json");
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      if (pkg && pkg.name === "clawpad" && typeof pkg.version === "string") {
+        return {
+          executablePath,
+          launcherRealpath,
+          packageRoot: dir,
+          version: pkg.version,
+        };
+      }
+    } catch {
+      // continue walking up
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function maybeHandoffToNewerInstall(cliArgs) {
+  if (process.env.CLAWPAD_HANDOFF_DONE === "1") return;
+  if (process.env.CLAWPAD_DISABLE_HANDOFF === "1") return;
+
+  // In source checkouts, keep local run behavior predictable for development.
+  try {
+    if (fs.existsSync(path.join(ROOT_DIR, ".git"))) return;
+  } catch {
+    // ignore
+  }
+
+  const currentVersion = CURRENT_VERSION;
+  const candidates = collectCandidateClawpadExecutables()
+    .map(resolveClawpadPackageInfo)
+    .filter(Boolean)
+    .filter((info) => info.launcherRealpath !== CURRENT_LAUNCHER_REALPATH);
+
+  if (candidates.length === 0) return;
+
+  candidates.sort((a, b) => compareSemver(b.version, a.version));
+  const best = candidates[0];
+  if (!best) return;
+  if (compareSemver(best.version, currentVersion) <= 0) return;
+
+  console.log(
+    `  🔁 Found newer ClawPad install (${best.version}). Relaunching from ${best.executablePath}...`,
+  );
+  const handoff = spawnSync(best.executablePath, cliArgs, {
+    stdio: "inherit",
+    windowsHide: true,
+    env: { ...process.env, CLAWPAD_HANDOFF_DONE: "1" },
+  });
+  if (handoff.error) {
+    console.warn(`  ⚠️  Relaunch failed: ${handoff.error.message}`);
+    return;
+  }
+  const code = typeof handoff.status === "number" ? handoff.status : 0;
+  process.exit(code);
 }
 
 async function checkForUpdates(currentVersion, platformProfile) {
