@@ -30,10 +30,10 @@ interface ContentPart {
 export async function GET(req: NextRequest) {
   const limitParam = req.nextUrl.searchParams.get("limit");
   const requestedSessionKey = req.nextUrl.searchParams.get("sessionKey") ?? "main";
-  const sessionKey = await resolveSessionKey(requestedSessionKey, { timeoutMs: 4_000 });
   const limit = Math.min(Math.max(parseInt(limitParam ?? "500", 10) || 500, 1), 1000);
 
   try {
+    const sessionKey = await resolveSessionKey(requestedSessionKey, { timeoutMs: 4_000 });
     let result: { messages?: HistoryMessage[] } | undefined;
 
     // Prefer the persistent WS client if connected

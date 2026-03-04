@@ -21,6 +21,42 @@ interface ChatContextPayload {
   scope?: "current" | "custom" | "all";
 }
 
+interface HistoryRecoveryMessage {
+  role?: string;
+  content?: unknown;
+}
+
+const CHAT_STREAM_IDLE_TIMEOUT_MS = 20_000;
+const CHAT_STREAM_MAX_TIMEOUT_MS = 300_000;
+const CHAT_WAIT_TIMEOUT_MS = 180_000;
+const CHAT_HISTORY_RECOVERY_LIMIT = 20;
+
+const TERMINAL_CHAT_STATES = new Set([
+  "final",
+  "aborted",
+  "error",
+  "done",
+  "complete",
+  "completed",
+]);
+
+function isTerminalChatState(state: unknown): boolean {
+  if (typeof state !== "string") return false;
+  const normalized = state.trim().toLowerCase();
+  return TERMINAL_CHAT_STATES.has(normalized);
+}
+
+function getLatestAssistantHistoryText(messages: unknown): string | null {
+  if (!Array.isArray(messages)) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as HistoryRecoveryMessage;
+    if (message?.role !== "assistant") continue;
+    const text = extractChatText(message.content).trim();
+    if (text) return text;
+  }
+  return null;
+}
+
 function dataUrlToBase64(dataUrl: string): { content: string; mimeType: string } | null {
   const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
   if (!match) {
@@ -325,6 +361,8 @@ export async function POST(req: Request) {
 
       await new Promise<void>((resolve) => {
         let timeout: ReturnType<typeof setTimeout> | null = null;
+        let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+        let recovering = false;
 
         const finish = () => {
           if (done) return;
@@ -332,6 +370,10 @@ export async function POST(req: Request) {
           if (timeout) {
             clearTimeout(timeout);
             timeout = null;
+          }
+          if (idleTimeout) {
+            clearTimeout(idleTimeout);
+            idleTimeout = null;
           }
           if (started) {
             writer.write({ type: "text-end", id: partId });
@@ -341,15 +383,81 @@ export async function POST(req: Request) {
           resolve();
         };
 
+        const resetIdleTimeout = () => {
+          if (done) return;
+          if (idleTimeout) {
+            clearTimeout(idleTimeout);
+          }
+          idleTimeout = setTimeout(() => {
+            void recoverMissingChatEvents();
+          }, CHAT_STREAM_IDLE_TIMEOUT_MS);
+        };
+
+        const recoverMissingChatEvents = async () => {
+          if (done || recovering) return;
+          recovering = true;
+
+          try {
+            await gatewayRequest({
+              method: "agent.wait",
+              params: { runId, timeoutMs: CHAT_WAIT_TIMEOUT_MS },
+              timeoutMs: CHAT_WAIT_TIMEOUT_MS + 5_000,
+            });
+          } catch {
+            // Continue to history recovery even if wait fails.
+          }
+
+          try {
+            const history = await gatewayRequest<{ messages?: HistoryRecoveryMessage[] }>({
+              method: "chat.history",
+              params: {
+                sessionKey: resolvedSessionKey,
+                limit: CHAT_HISTORY_RECOVERY_LIMIT,
+              },
+              timeoutMs: 8_000,
+            });
+            const recovered = getLatestAssistantHistoryText(history?.messages);
+            if (recovered) {
+              writeDelta(recovered);
+            } else if (!started) {
+              writer.write({ type: "text-start", id: partId });
+              writer.write({
+                type: "text-delta",
+                id: partId,
+                delta:
+                  "OpenClaw accepted the message, but no chat stream arrived. Refresh history and retry.",
+              });
+              started = true;
+            }
+          } catch (error) {
+            console.warn("[api/chat] chat stream recovery failed:", String(error));
+            if (!started) {
+              writer.write({ type: "text-start", id: partId });
+              writer.write({
+                type: "text-delta",
+                id: partId,
+                delta:
+                  "OpenClaw is still processing or unreachable. Retry in a few seconds.",
+              });
+              started = true;
+            }
+          } finally {
+            finish();
+          }
+        };
+
         const handleChatEvent = (payload: ChatEvent) => {
           if (done) return;
 
           // Match by runId (preferred) or sessionKey
           if (payload.runId && payload.runId !== runId) return;
+          resetIdleTimeout();
 
           const state = payload.state;
+          const normalizedState =
+            typeof state === "string" ? state.trim().toLowerCase() : "";
 
-          if (state === "delta") {
+          if (normalizedState === "delta") {
             // Extract text from the message content
             const msg = payload.message;
             if (!msg) return;
@@ -357,14 +465,14 @@ export async function POST(req: Request) {
             if (!nextText || nextText === lastPayloadText) return;
             lastPayloadText = nextText;
             writeDelta(nextText);
-          } else if (state === "final" || state === "aborted" || state === "error") {
+          } else if (isTerminalChatState(state)) {
             // Final message — extract any remaining text
-            if (state === "final" && payload.message) {
+            if (normalizedState === "final" && payload.message) {
               const text = extractChatText(payload.message.content);
               if (text) writeDelta(text);
             }
 
-            if (state === "error" && payload.error) {
+            if (normalizedState === "error" && payload.error) {
               if (!started) {
                 writer.write({ type: "text-start", id: partId });
                 started = true;
@@ -381,6 +489,7 @@ export async function POST(req: Request) {
         };
 
         chatEventConsumer = handleChatEvent;
+        resetIdleTimeout();
 
         // Drain any queued events that arrived between chat.send ack and
         // assigning the active consumer.
@@ -390,8 +499,8 @@ export async function POST(req: Request) {
         }
 
         timeout = setTimeout(() => {
-          finish();
-        }, 300_000); // 5 min max timeout
+          void recoverMissingChatEvents();
+        }, CHAT_STREAM_MAX_TIMEOUT_MS);
       });
     },
   });

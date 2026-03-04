@@ -922,6 +922,7 @@ const INPUT_STATUS_ACTIVE_FRESH_WINDOW_MS = 15_000;
 const CHAT_EVENT_REFRESH_DEBOUNCE_MS = 250;
 const CHAT_POLL_REFRESH_MS = 5_000;
 const POST_SEND_HISTORY_SYNC_DELAYS_MS = [1_200, 3_500, 7_500] as const;
+const HISTORY_FETCH_TIMEOUT_MS = 15_000;
 
 // ─── History Hook ───────────────────────────────────────────────────────────
 
@@ -938,12 +939,22 @@ function useHistoryMessages(
   const emptyRetryCountRef = useRef(0);
   const latestRequestIdRef = useRef(0);
   const activeVisibleFetchesRef = useRef(0);
+  const historyFetchAbortRef = useRef<AbortController | null>(null);
 
   const fetchHistory = useCallback(async (opts?: { silent?: boolean; preserveExistingOnEmpty?: boolean }) => {
     const resolvedKey = sessionKey || "main";
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
     const silent = opts?.silent === true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+    }, HISTORY_FETCH_TIMEOUT_MS);
+
+    if (historyFetchAbortRef.current) {
+      historyFetchAbortRef.current.abort();
+    }
+    historyFetchAbortRef.current = controller;
 
     if (!silent) {
       activeVisibleFetchesRef.current += 1;
@@ -953,7 +964,7 @@ function useHistoryMessages(
     try {
       const res = await fetch(
         `/api/gateway/history?limit=1000&sessionKey=${encodeURIComponent(resolvedKey)}`,
-        { cache: "no-store" },
+        { cache: "no-store", signal: controller.signal },
       );
       const data = res.ok ? await res.json() : { messages: [] };
       if (requestId !== latestRequestIdRef.current) return;
@@ -972,9 +983,19 @@ function useHistoryMessages(
         }
         return nextMessages;
       });
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        return;
+      }
       // Silent — gateway may not support history or may be reconnecting
     } finally {
+      window.clearTimeout(timeout);
+      if (historyFetchAbortRef.current === controller) {
+        historyFetchAbortRef.current = null;
+      }
       if (!silent) {
         activeVisibleFetchesRef.current = Math.max(
           0,
@@ -1022,6 +1043,13 @@ function useHistoryMessages(
     setVisibleCount(INITIAL_VISIBLE_COUNT);
     void fetchHistory();
   }, [sessionKey, fetchHistory]);
+
+  useEffect(() => {
+    return () => {
+      historyFetchAbortRef.current?.abort();
+      historyFetchAbortRef.current = null;
+    };
+  }, []);
 
   // Refetch when panel opens and empty
   useEffect(() => {
