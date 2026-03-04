@@ -9,6 +9,7 @@
  * the native WebSocket in Next.js server runtime).
  */
 
+import os from "node:os";
 import WS from "ws";
 import {
   buildGatewayDeviceProof,
@@ -78,7 +79,11 @@ class GatewayWSClient {
   private _status: GatewayConnectionStatus = "disconnected";
   private token: string | undefined;
   private configuredToken: string | undefined;
-  private url: string = "ws://127.0.0.1:18789";
+  private configuredUrl: string = "http://127.0.0.1:18789";
+  private fallbackUrl: string | null = null;
+  private localHostAliases: Set<string> | null = null;
+  private localHostAliasesAtMs = 0;
+  private url: string = "http://127.0.0.1:18789";
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private requestId = 0;
   private lastError: string | null = null;
@@ -125,7 +130,9 @@ class GatewayWSClient {
    * If already connected or connecting, this is a no-op.
    */
   async connect(url?: string, token?: string): Promise<void> {
-    if (url) this.url = url;
+    if (url) {
+      this.applyPreferredGatewayUrl(url);
+    }
     if (arguments.length >= 2) {
       const normalizedToken = this.normalizeToken(token);
       this.configuredToken = normalizedToken;
@@ -263,6 +270,71 @@ class GatewayWSClient {
     }
   }
 
+  private normalizeHost(rawHost: string): string {
+    return rawHost.trim().toLowerCase();
+  }
+
+  private getLocalHostAliases(): Set<string> {
+    const now = Date.now();
+    if (this.localHostAliases && now - this.localHostAliasesAtMs < 60_000) {
+      return this.localHostAliases;
+    }
+
+    const aliases = new Set<string>(["localhost", "127.0.0.1", "::1"]);
+    const hostName = this.normalizeHost(os.hostname());
+    if (hostName) {
+      aliases.add(hostName);
+      aliases.add(`${hostName}.local`);
+    }
+    for (const entries of Object.values(os.networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        const address = this.normalizeHost(entry.address ?? "");
+        if (address) aliases.add(address);
+      }
+    }
+
+    this.localHostAliases = aliases;
+    this.localHostAliasesAtMs = now;
+    return aliases;
+  }
+
+  private resolveLoopbackUrl(rawUrl: string): string | null {
+    if (!rawUrl) return null;
+    const httpLike = rawUrl.replace(/^ws/i, "http");
+    try {
+      const parsed = new URL(httpLike);
+      const host = this.normalizeHost(parsed.hostname);
+      if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
+        return null;
+      }
+      const aliases = this.getLocalHostAliases();
+      if (!aliases.has(host)) {
+        return null;
+      }
+      const protocol = parsed.protocol === "https:" ? "https:" : "http:";
+      const port = parsed.port || (protocol === "https:" ? "443" : "80");
+      const pathname = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "";
+      return `${protocol}//127.0.0.1:${port}${pathname}${parsed.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private applyPreferredGatewayUrl(rawUrl: string): void {
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return;
+
+    this.configuredUrl = trimmed;
+    const loopbackUrl = this.resolveLoopbackUrl(trimmed);
+    if (loopbackUrl && loopbackUrl !== trimmed) {
+      this.url = loopbackUrl;
+      this.fallbackUrl = trimmed;
+      return;
+    }
+    this.url = trimmed;
+    this.fallbackUrl = null;
+  }
+
   private isAuthError(code?: string | null, message?: string | null): boolean {
     const normalized = (code ?? "").toUpperCase();
     if (normalized === "NOT_PAIRED" || normalized === "AUTH_REQUIRED" || normalized === "UNAUTHORIZED") {
@@ -288,7 +360,7 @@ class GatewayWSClient {
         const { detectGateway } = await import("./detect");
         const config = await detectGateway();
         if (config) {
-          this.url = config.url;
+          this.applyPreferredGatewayUrl(config.url);
           const normalizedToken = this.normalizeToken(config.token);
           this.configuredToken = normalizedToken;
           this.token = normalizedToken;
@@ -320,6 +392,7 @@ class GatewayWSClient {
 
   private doConnect(): void {
     this.setStatus("connecting");
+    let socketOpened = false;
 
     try {
       const wsUrl = this.url.replace(/^http/, "ws");
@@ -332,6 +405,7 @@ class GatewayWSClient {
     }
 
     this.ws.on("open", () => {
+      socketOpened = true;
       console.log("[gateway-ws] WebSocket opened, waiting for challenge...");
       this.lastPongAt = Date.now();
       if (!this.pingInterval) {
@@ -377,6 +451,13 @@ class GatewayWSClient {
         pending.reject(new Error("WebSocket closed"));
       }
       this.pendingRPC.clear();
+      if (!socketOpened && this.fallbackUrl && this.url !== this.fallbackUrl) {
+        this.lastError = "localhost probe failed; retrying configured gateway address";
+        this.lastErrorCode = "GATEWAY_URL_FALLBACK";
+        this.url = this.fallbackUrl;
+        this.fallbackUrl = null;
+        this.lastAuthRetryAt = null;
+      }
       this.setStatus("disconnected");
       this.scheduleReconnect();
     });
@@ -510,6 +591,28 @@ class GatewayWSClient {
       } else {
         const codeRaw = (res.error as { code?: unknown } | undefined)?.code;
         const message = (res.error as { message?: string } | undefined)?.message ?? "connect rejected";
+        const detailsRaw = (() => {
+          const errorRecord = res.error as { details?: unknown; data?: unknown } | undefined;
+          if (!errorRecord || typeof errorRecord !== "object") return undefined;
+          if (errorRecord.details && typeof errorRecord.details === "object") {
+            return errorRecord.details as Record<string, unknown>;
+          }
+          if (
+            errorRecord.data &&
+            typeof errorRecord.data === "object" &&
+            "details" in (errorRecord.data as Record<string, unknown>) &&
+            typeof (errorRecord.data as Record<string, unknown>).details === "object"
+          ) {
+            return (errorRecord.data as { details?: Record<string, unknown> }).details;
+          }
+          return undefined;
+        })();
+        const detailCode =
+          typeof detailsRaw?.code === "string" ? detailsRaw.code.trim().toUpperCase() : undefined;
+        const requestId =
+          typeof detailsRaw?.requestId === "string" && detailsRaw.requestId.trim()
+            ? detailsRaw.requestId.trim()
+            : undefined;
         const code =
           typeof codeRaw === "string"
             ? codeRaw
@@ -541,8 +644,30 @@ class GatewayWSClient {
               this.lastErrorCode = "AUTH_RECOVERY";
             }
           }
-          if (normalizedCode === "NOT_PAIRED" && !this.configuredToken) {
-            this.lastError = "pairing required";
+          if (normalizedCode === "NOT_PAIRED") {
+            if (detailCode === "PAIRING_REQUIRED" || message.toLowerCase().includes("pairing required")) {
+              const loopbackRetry = this.resolveLoopbackUrl(this.configuredUrl);
+              if (loopbackRetry && loopbackRetry !== this.url) {
+                this.fallbackUrl = this.configuredUrl;
+                this.url = loopbackRetry;
+                this.lastError = "pairing required on gateway address; retrying localhost";
+                this.lastErrorCode = "PAIRING_LOCAL_RETRY";
+                this.lastAuthRetryAt = null;
+              } else if (!this.configuredToken) {
+                this.lastError = requestId
+                  ? `pairing required (request ${requestId})`
+                  : "pairing required";
+              } else {
+                this.lastError = requestId
+                  ? `pairing required (request ${requestId})`
+                  : "pairing required";
+              }
+            } else if (detailCode === "DEVICE_IDENTITY_REQUIRED") {
+              this.lastError = !this.configuredToken
+                ? "device identity required (gateway token not detected)"
+                : "device identity required";
+              this.lastErrorCode = "DEVICE_IDENTITY_REQUIRED";
+            }
           } else if (normalizedCode === "AUTH_REQUIRED" && !this.configuredToken) {
             this.lastError = "gateway token missing";
           }

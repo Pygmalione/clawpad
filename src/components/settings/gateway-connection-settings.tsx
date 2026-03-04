@@ -38,6 +38,11 @@ export function GatewayConnectionSettings({
     setUrl,
     setToken,
   } = useGatewayStore();
+  const pairingRequestId = (() => {
+    const match = wsError?.match(/pairing required\s*\(request\s+([^)]+)\)/i);
+    const value = match?.[1]?.trim();
+    return value ? value : null;
+  })();
 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -136,7 +141,9 @@ export function GatewayConnectionSettings({
                     : connected
                       ? "Connected to gateway"
                       : wsError?.toLowerCase().includes("pairing required")
-                        ? "Pairing required. Approve this device in OpenClaw, then reconnect."
+                        ? pairingRequestId
+                          ? `Pairing required (request ${pairingRequestId}). Approve this device in OpenClaw, then reconnect.`
+                          : "Pairing required. Approve this device in OpenClaw, then reconnect."
                       : wsError ||
                         error ||
                         (reason === "server_unreachable"

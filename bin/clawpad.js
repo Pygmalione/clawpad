@@ -1456,75 +1456,46 @@ function writeOpenClawConfig(configPath, config) {
   fs.writeFileSync(configPath, `${serialized}\n`, "utf-8");
 }
 
-function hasRequiredOperatorScopes(scopeSet) {
-  return scopeSet.has("operator.read") && scopeSet.has("operator.write");
-}
-
-function normalizeScopeArray(raw, defaults = []) {
-  const scopes = normalizeScopes(raw);
-  if (scopes.size === 0 && Array.isArray(defaults)) {
-    for (const item of defaults) {
-      const normalized = String(item || "").trim().toLowerCase();
-      if (normalized) scopes.add(normalized);
-    }
-  }
-  return [...scopes];
-}
-
 function normalizeTokenEntry(entry) {
   const token = extractTokenFromEntry(entry);
   if (!token) return null;
-  const scopes =
-    entry && typeof entry === "object"
-      ? normalizeScopeArray(entry.scopes ?? entry.scope)
-      : [];
   return {
     token,
-    scopes,
+    scopes:
+      entry && typeof entry === "object"
+        ? [...normalizeScopes(entry.scopes ?? entry.scope)]
+        : [],
   };
 }
 
-function migrateLegacyGatewayAuthConfig(configPath, config) {
+function repairUnsupportedGatewayAuthTokens(configPath, config) {
   const auth = config?.gateway?.auth;
   if (!auth || typeof auth !== "object") {
     return { updated: false, config };
   }
 
-  const defaults = ["operator.read", "operator.write", "operator.admin"];
-  const tokenEntries = Array.isArray(auth.tokens) ? auth.tokens.map(normalizeTokenEntry).filter(Boolean) : [];
-  const hasWritableToken = tokenEntries.some((entry) => hasRequiredOperatorScopes(new Set(entry.scopes)));
-  if (hasWritableToken) {
+  if (!Array.isArray(auth.tokens)) {
     return { updated: false, config };
   }
 
-  const directToken = normalizeToken(auth.token);
-  let updated = false;
+  const tokenEntries = auth.tokens
+    .map(normalizeTokenEntry)
+    .filter(Boolean)
+    .map((entry, index) => ({
+      token: entry.token,
+      priority: index,
+      score: scoreScopes(new Set(entry.scopes)),
+    }));
 
-  if (directToken) {
-    const directScopes = normalizeScopeArray(auth.scopes ?? auth.scope, defaults);
-    const rebuiltTokens = [
-      { token: directToken, scopes: directScopes },
-      ...tokenEntries.filter((entry) => entry.token !== directToken),
-    ];
+  tokenEntries.sort((a, b) => b.score - a.score || a.priority - b.priority);
 
-    auth.tokens = rebuiltTokens;
-    delete auth.token;
-    delete auth.scope;
-    delete auth.scopes;
-    updated = true;
-  } else if (tokenEntries.length > 0) {
-    const [first, ...rest] = tokenEntries;
-    if (first) {
-      const merged = [...new Set([...first.scopes, ...defaults])];
-      auth.tokens = [{ token: first.token, scopes: merged }, ...rest];
-      updated = true;
-    }
+  const selectedToken = normalizeToken(auth.token) || tokenEntries[0]?.token;
+  if (selectedToken) {
+    auth.token = selectedToken;
   }
-
-  if (!updated) {
-    return { updated: false, config };
-  }
-
+  delete auth.tokens;
+  delete auth.scope;
+  delete auth.scopes;
   writeOpenClawConfig(configPath, config);
   return { updated: true, config };
 }
@@ -2364,12 +2335,12 @@ async function main(
     }
   }
   if (openclawInstall.installed) {
-    const migration = migrateLegacyGatewayAuthConfig(loadedConfig.configPath, config);
+    const migration = repairUnsupportedGatewayAuthTokens(loadedConfig.configPath, config);
     config = migration.config;
     if (migration.updated) {
-      console.log("  🔐 Upgraded OpenClaw gateway auth to scoped token format.");
+      console.log("  🔐 Repaired OpenClaw gateway auth config (removed unsupported gateway.auth.tokens).");
       if (restartOpenClawGateway()) {
-        console.log("  ♻️  Restarted OpenClaw gateway to apply scoped token config.");
+        console.log("  ♻️  Restarted OpenClaw gateway to apply repaired auth config.");
       } else {
         console.warn("  ⚠️  Updated config but could not restart gateway automatically.");
         console.warn("     Run: openclaw gateway restart");

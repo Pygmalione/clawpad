@@ -1199,6 +1199,11 @@ export function ChatPanel({ variant = "default" }: ChatPanelProps) {
   const [slashLoading, setSlashLoading] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const connectionBlocked = wsStatus !== "connected";
+  const pairingRequestId = (() => {
+    const match = wsError?.match(/pairing required\s*\(request\s+([^)]+)\)/i);
+    const value = match?.[1]?.trim();
+    return value ? value : null;
+  })();
 
   // ─── Show thinking toggle ───────────────────────────────────────────
   const [showThinking, setShowThinking] = useState(false);
@@ -2833,7 +2838,9 @@ export function ChatPanel({ variant = "default" }: ChatPanelProps) {
         <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
           {wsStatus === "reconnecting"
             ? wsError?.toLowerCase().includes("pairing required")
-              ? "Gateway reachable, but pairing is required. Approve this device in OpenClaw and ClawPad will reconnect automatically."
+              ? pairingRequestId
+                ? `Gateway reachable, but pairing is required (request ${pairingRequestId}). Approve this device in OpenClaw and ClawPad will reconnect automatically.`
+                : "Gateway reachable, but pairing is required. Approve this device in OpenClaw and ClawPad will reconnect automatically."
               : wsError
                 ? `Reconnecting to OpenClaw gateway… (${wsError})`
                 : "Reconnecting to OpenClaw gateway…"

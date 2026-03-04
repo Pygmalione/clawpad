@@ -19,6 +19,7 @@ test("detectGateway prefers config token over OPENCLAW_GATEWAY_TOKEN when config
   const prevStateDir = process.env.OPENCLAW_STATE_DIR;
   const prevGatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
   const prevGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const prevSkipMigration = process.env.CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION;
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawpad-gateway-detect-"));
   const configPath = path.join(tempDir, "openclaw.json");
@@ -39,6 +40,7 @@ test("detectGateway prefers config token over OPENCLAW_GATEWAY_TOKEN when config
 
   process.env.OPENCLAW_CONFIG_PATH = configPath;
   process.env.OPENCLAW_GATEWAY_TOKEN = "env-token";
+  process.env.CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION = "1";
   delete process.env.OPENCLAW_STATE_DIR;
   delete process.env.OPENCLAW_GATEWAY_URL;
 
@@ -52,6 +54,7 @@ test("detectGateway prefers config token over OPENCLAW_GATEWAY_TOKEN when config
     restoreEnvVar("OPENCLAW_STATE_DIR", prevStateDir);
     restoreEnvVar("OPENCLAW_GATEWAY_URL", prevGatewayUrl);
     restoreEnvVar("OPENCLAW_GATEWAY_TOKEN", prevGatewayToken);
+    restoreEnvVar("CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION", prevSkipMigration);
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
@@ -61,6 +64,7 @@ test("detectGateway selects writable token from gateway.auth.tokens when direct 
   const prevStateDir = process.env.OPENCLAW_STATE_DIR;
   const prevGatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
   const prevGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const prevSkipMigration = process.env.CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION;
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawpad-gateway-detect-scopes-"));
   const configPath = path.join(tempDir, "openclaw.json");
@@ -85,6 +89,7 @@ test("detectGateway selects writable token from gateway.auth.tokens when direct 
   );
 
   process.env.OPENCLAW_CONFIG_PATH = configPath;
+  process.env.CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION = "1";
   delete process.env.OPENCLAW_STATE_DIR;
   delete process.env.OPENCLAW_GATEWAY_URL;
   delete process.env.OPENCLAW_GATEWAY_TOKEN;
@@ -98,6 +103,7 @@ test("detectGateway selects writable token from gateway.auth.tokens when direct 
     restoreEnvVar("OPENCLAW_STATE_DIR", prevStateDir);
     restoreEnvVar("OPENCLAW_GATEWAY_URL", prevGatewayUrl);
     restoreEnvVar("OPENCLAW_GATEWAY_TOKEN", prevGatewayToken);
+    restoreEnvVar("CLAWPAD_SKIP_GATEWAY_AUTH_MIGRATION", prevSkipMigration);
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

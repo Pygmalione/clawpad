@@ -1,5 +1,6 @@
 import { readFile } from "fs/promises";
 import { findOpenClawConfigPath } from "@/lib/openclaw/config";
+import { migrateLegacyGatewayAuthConfigIfNeeded } from "@/lib/openclaw/gateway-auth-migration";
 import { parseOpenClawConfig } from "@/lib/openclaw/parse";
 import { readGatewayOverride } from "./override";
 
@@ -8,6 +9,33 @@ interface GatewayConfig {
   token?: string;
   agentName?: string;
   source: string;
+}
+
+let legacyGatewayAuthMigrationAttempted = false;
+let legacyGatewayAuthMigrationPromise: Promise<void> | null = null;
+
+async function ensureLegacyGatewayAuthMigrated(): Promise<void> {
+  if (legacyGatewayAuthMigrationAttempted) {
+    return legacyGatewayAuthMigrationPromise ?? Promise.resolve();
+  }
+  legacyGatewayAuthMigrationAttempted = true;
+  legacyGatewayAuthMigrationPromise = (async () => {
+    try {
+      const result = await migrateLegacyGatewayAuthConfigIfNeeded();
+      if (!result.updated) {
+        return;
+      }
+      const restartStatus = result.restarted ? "and restarted gateway" : "restart required";
+      console.warn(
+        `[gateway-detect] Repaired unsupported gateway.auth.tokens config at ${result.configPath ?? "unknown path"} (${restartStatus}).`,
+      );
+    } catch (error) {
+      console.warn("[gateway-detect] Gateway auth config repair failed:", error);
+    } finally {
+      legacyGatewayAuthMigrationPromise = null;
+    }
+  })();
+  return legacyGatewayAuthMigrationPromise;
 }
 
 /**
@@ -50,6 +78,7 @@ export async function detectGateway(): Promise<GatewayConfig | null> {
 
   // 3. Try OpenClaw config (OPENCLAW_CONFIG_PATH / OPENCLAW_STATE_DIR / defaults)
   try {
+    await ensureLegacyGatewayAuthMigrated();
     const configPath = findOpenClawConfigPath();
     if (configPath) {
       const raw = await readFile(configPath, "utf-8");
