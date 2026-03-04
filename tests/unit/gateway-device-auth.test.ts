@@ -164,3 +164,30 @@ test("scoreGatewayScopes prioritizes read/write over admin-only scope sets", () 
   const readWrite = scoreGatewayScopes(["operator.read", "operator.write"]);
   assert.ok(readWrite > adminOnly);
 });
+
+test("loadOrCreateGatewayDeviceIdentity uses ClawPad-specific identity file", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawpad-device-identity-path-"));
+  const env = makeEnv(tempDir);
+  try {
+    const identity = loadOrCreateGatewayDeviceIdentity(env);
+    assert.ok(identity.deviceId.length > 0);
+
+    const identityDir = path.join(tempDir, "identity");
+    const clawpadIdentityPath = path.join(identityDir, "clawpad-device.json");
+    const legacyIdentityPath = path.join(identityDir, "device.json");
+
+    const clawpadExists = await fs
+      .stat(clawpadIdentityPath)
+      .then(() => true)
+      .catch(() => false);
+    const legacyExists = await fs
+      .stat(legacyIdentityPath)
+      .then(() => true)
+      .catch(() => false);
+
+    assert.equal(clawpadExists, true);
+    assert.equal(legacyExists, false);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

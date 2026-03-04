@@ -36,17 +36,21 @@ interface DeviceProofParams {
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const TOKEN_KEY_SEPARATOR = "::";
 export const REQUIRED_OPERATOR_GATEWAY_SCOPES = ["operator.read", "operator.write"] as const;
+const CLAWPAD_DEVICE_IDENTITY_FILE = "clawpad-device.json";
+const CLAWPAD_DEVICE_AUTH_FILE = "clawpad-device-auth.json";
 
 function resolveIdentityDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveOpenClawStateDir(env), "identity");
 }
 
 function resolveDeviceIdentityPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveIdentityDir(env), "device.json");
+  // Use a ClawPad-specific identity file to avoid metadata collisions with
+  // other OpenClaw clients sharing ~/.openclaw/identity/device.json.
+  return path.join(resolveIdentityDir(env), CLAWPAD_DEVICE_IDENTITY_FILE);
 }
 
 function resolveDeviceAuthPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveIdentityDir(env), "device-auth.json");
+  return path.join(resolveIdentityDir(env), CLAWPAD_DEVICE_AUTH_FILE);
 }
 
 function ensureDirForFile(filePath: string): void {

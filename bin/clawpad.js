@@ -732,6 +732,11 @@ function connectRelay(relayUrl, token, gatewayWsUrl, gatewayToken, agentName = "
 // ─── Normal Launcher Logic ──────────────────────────────
 async function runLauncher(args) {
 
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(CURRENT_VERSION);
+    process.exit(0);
+  }
+
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
     process.exit(0);
@@ -808,6 +813,7 @@ function printHelp() {
     --setup             Open setup onboarding flow on launch
     --yes               Auto-approve integration steps
     --force             Kill any process using the selected port
+    -v, --version       Print version
     -h, --help          Show this help message
 
   Options (share):

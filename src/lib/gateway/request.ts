@@ -54,6 +54,23 @@ function extractGatewayErrorCodeAndMessage(error: unknown): { code: string | nul
   return { code, message };
 }
 
+function extractGatewayErrorDetails(error: unknown): Record<string, unknown> | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as Record<string, unknown>;
+  if (record.details && typeof record.details === "object") {
+    return record.details as Record<string, unknown>;
+  }
+  if (
+    record.data &&
+    typeof record.data === "object" &&
+    "details" in (record.data as Record<string, unknown>) &&
+    typeof (record.data as Record<string, unknown>).details === "object"
+  ) {
+    return (record.data as { details: Record<string, unknown> }).details;
+  }
+  return null;
+}
+
 function isAuthError(code: string | null, message: string): boolean {
   if (!message) return false;
   if (code === "NOT_PAIRED" || code === "AUTH_REQUIRED" || code === "UNAUTHORIZED") {
@@ -193,6 +210,13 @@ export async function gatewayRequest<T = unknown>(
         if (frame.type === "res" && frame.id === String(reqId) && reqId === 1) {
           if (!frame.ok) {
             const { code, message } = extractGatewayErrorCodeAndMessage(frame.error);
+            const details = extractGatewayErrorDetails(frame.error);
+            const detailCode =
+              typeof details?.code === "string" ? details.code.trim().toUpperCase() : "";
+            const requestId =
+              typeof details?.requestId === "string" && details.requestId.trim()
+                ? details.requestId.trim()
+                : null;
             if (source === "stored" && isAuthError(code, message)) {
               clearStoredGatewayDeviceToken({
                 deviceId: identity.deviceId,
@@ -208,9 +232,21 @@ export async function gatewayRequest<T = unknown>(
               return;
             }
             if (code === "NOT_PAIRED") {
+              if (detailCode === "DEVICE_IDENTITY_REQUIRED") {
+                done(
+                  new Error(
+                    !configToken
+                      ? "Gateway requires device identity and no gateway token was detected. Update OpenClaw gateway auth and restart."
+                      : "Gateway requires device identity. Restart ClawPad to retry device identity handshake.",
+                  ),
+                );
+                return;
+              }
               done(
                 new Error(
-                  "Gateway pairing required. Approve this ClawPad device in OpenClaw, then reconnect.",
+                  requestId
+                    ? `Gateway pairing required (request ${requestId}). Approve this ClawPad device in OpenClaw, then reconnect.`
+                    : "Gateway pairing required. Approve this ClawPad device in OpenClaw, then reconnect.",
                 ),
               );
               return;
