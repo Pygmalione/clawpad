@@ -1,0 +1,75 @@
+version: "3.8"
+
+# ClawPad - Imperialny Fork
+# Domeny: clawpad.sophitech.pl, notepad.sophitech.pl
+# Gateway: http://172.17.0.1:18789 (OpenClaw VPS3 przez socat)
+# Auth token: Pieshkipieshki2@@
+
+services:
+  clawpad:
+    image: ghcr.io/pygmalione/clawpad:latest
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Gateway OpenClaw - dostęp przez socat (172.17.0.1 = docker bridge)
+      - OPENCLAW_GATEWAY_URL=http://172.17.0.1:18789
+      - OPENCLAW_GATEWAY_TOKEN=Pieshkipieshki2@@
+      # Katalog stron - mapowany jako named volume
+      - CLAWPAD_PAGES_DIR=/data/pages
+      # OpenClaw state dir w kontenerze
+      - CLAWPAD_OPENCLAW_DIR=/data/openclaw
+    volumes:
+      - clawpad-pages:/data/pages
+      - clawpad-openclaw:/data/openclaw
+    networks:
+      - shared-network-overlay
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        monitor: 15s
+      rollback_config:
+        parallelism: 1
+        order: start-first
+        monitor: 15s
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      labels:
+        # Router clawpad.sophitech.pl + notepad.sophitech.pl
+        - "traefik.enable=true"
+        - "traefik.http.routers.clawpad.rule=Host(`clawpad.sophitech.pl`) || Host(`notepad.sophitech.pl`)"
+        - "traefik.http.routers.clawpad.entrypoints=websecure"
+        - "traefik.http.routers.clawpad.tls.certresolver=le"
+        - "traefik.http.services.clawpad.loadbalancer.server.port=3000"
+        - "traefik.http.services.clawpad.loadbalancer.passhostheader=true"
+        # WebSocket sticky sessions
+        - "traefik.http.services.clawpad.loadbalancer.sticky.cookie=true"
+        - "traefik.http.services.clawpad.loadbalancer.sticky.cookie.name=clawpad_sticky"
+        - "traefik.docker.network=shared-network-overlay"
+
+volumes:
+  clawpad-pages:
+    name: clawpad-pages
+  clawpad-openclaw:
+    name: clawpad-openclaw
+
+networks:
+  shared-network-overlay:
+    third-party: true
