@@ -7,7 +7,7 @@ version: "3.8"
 
 services:
   clawpad:
-    image: ghcr.io/pygmalione/clawpad:latest
+    image: clawpad-imperium:latest
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -66,9 +66,7 @@ services:
 
 volumes:
   clawpad-pages:
-    name: clawpad-pages
   clawpad-openclaw:
-    name: clawpad-openclaw
 
 networks:
   shared-network-overlay:
