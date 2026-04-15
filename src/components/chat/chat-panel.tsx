@@ -1591,7 +1591,7 @@ export function ChatPanel({ variant = "default" }: ChatPanelProps) {
     const load = async () => {
       try {
         const res = await fetch(
-          `/api/files/pages/${encodeURIComponent(activePage)}`,
+          `/api/files/pages/${activePage.split('/').map(encodeURIComponent).join('/')}`,
         );
         if (!res.ok) throw new Error("Failed to load page");
         const data = await res.json();

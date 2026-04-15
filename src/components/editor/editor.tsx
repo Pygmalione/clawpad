@@ -350,7 +350,7 @@ export default function Editor({
       updateStatus("saving");
       try {
         const res = await fetch(
-          `/api/files/pages/${encodeURIComponent(filePathRef.current)}`,
+          `/api/files/pages/${filePathRef.current.split('/').map(encodeURIComponent).join('/')}`,
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },

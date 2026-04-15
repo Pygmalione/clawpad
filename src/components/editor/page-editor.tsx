@@ -297,12 +297,12 @@ export function PageEditor({
       titleSaveRef.current = setTimeout(async () => {
         try {
           const res = await fetch(
-            `/api/files/pages/${encodeURIComponent(filePath)}`,
+            `/api/files/pages/${filePath.split('/').map(encodeURIComponent).join('/')}`,
           );
           if (!res.ok) return;
           const page = await res.json();
 
-          await fetch(`/api/files/pages/${encodeURIComponent(filePath)}`, {
+          await fetch(`/api/files/pages/${filePath.split('/').map(encodeURIComponent).join('/')}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -533,7 +533,7 @@ export function PageEditor({
     async (force = false) => {
       try {
         const res = await fetch(
-          `/api/files/pages/${encodeURIComponent(filePathRef.current)}`,
+          `/api/files/pages/${filePathRef.current.split('/').map(encodeURIComponent).join('/')}`,
         );
         if (!res.ok) {
           if (res.status === 404) {
