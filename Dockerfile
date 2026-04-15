@@ -10,7 +10,11 @@ WORKDIR /app
 # ---- deps ----
 FROM base AS deps
 RUN apk add --no-cache libc6-compat git
+# Kopiuj manifesty i bin/ (postinstall wymaga bin/postinstall-repair.js)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY bin/ ./bin/
+# Skip postinstall repair w kontenerze (nie potrzebujemy CLI symlinku)
+ENV CLAWPAD_SKIP_POSTINSTALL_REPAIR=1
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --no-frozen-lockfile
 
 # ---- builder ----
