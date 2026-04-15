@@ -11,7 +11,7 @@ WORKDIR /app
 FROM base AS deps
 RUN apk add --no-cache libc6-compat git
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --no-frozen-lockfile
 
 # ---- builder ----
 FROM base AS builder
